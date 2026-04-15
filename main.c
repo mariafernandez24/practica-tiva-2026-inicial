@@ -531,5 +531,7 @@ int main(void)
     {
         // Si llego aqui es que algo raro ha pasado
     }
+
+    // Nueva funcionalidad
 }
 // void GPIOPinTypePWM (uint32_t ui32Port, uint8_t ui8Pins) Configures pin(s) for use by the PWM peripheral
