@@ -112,10 +112,20 @@ static portTASK_FUNCTION(ProductorTask, pvParameters)
     PARAM_MENSAJE_PRODUCTO msg;
     for (;;)
     {
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
         // xSemaphoreGive(semProducto);
         msg.kit_id = (rand() % 100) + 1;
-        xQueueSend(colaKits, &msg, portMAX_DELAY);
+        // xQueueSend(colaKits, &msg, portMAX_DELAY);
+
+        if (xQueueSend(colaKits, &msg, 0) != pdPASS)
+        {
+            GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, GPIO_PIN_1);
+            vTaskDelete(NULL);
+        }
+        else
+        {
+            GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0);
+        }
 
         xSemaphoreTake(mutexUART, portMAX_DELAY);
         UARTprintf("Productor: kit listo ID=%d\r\n", msg.kit_id);
@@ -343,6 +353,12 @@ int main(void)
             ;
     }
 
+    // parte led
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF))
+        ;
+
+    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_1);
     //
     // Pone en marcha el planificador. La llamada NO tiene retorno
     //
