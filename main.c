@@ -123,6 +123,9 @@ static portTASK_FUNCTION(ConsumidorTask, pvParameters)
 {
     (void)pvParameters;
     uint32_t contadorProductos = 0;
+    PARAM_MENSAJE_PRODUCTO param;
+    uint8_t frame[MAX_FRAME_SIZE];
+    int32_t size;
 
     for (;;)
     {
@@ -132,6 +135,16 @@ static portTASK_FUNCTION(ConsumidorTask, pvParameters)
         xSemaphoreTake(mutexUART, portMAX_DELAY);
         UARTprintf("Producto ensamblado. Total: %d\r\n", contadorProductos);
         xSemaphoreGive(mutexUART);
+        param.totalProductos = contadorProductos;
+
+        size = create_frame(frame, MENSAJE_PRODUCTO, &param, sizeof(param), MAX_FRAME_SIZE);
+
+        if (size > 0)
+        {
+            xSemaphoreTake(mutexUSB, portMAX_DELAY);
+            send_frame(frame, size);
+            xSemaphoreGive(mutexUSB);
+        }
     }
 }
 
