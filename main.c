@@ -47,7 +47,7 @@ uint32_t g_ui32CPUUsage;
 uint32_t g_ui32SystemClock;
 SemaphoreHandle_t mutexUSB, mutexUART; // Para proteccion del canal USB y el caal UART -terminal-, ya que ahora lo van a usar varias tareas distintas
 SemaphoreHandle_t semProducto;
-
+QueueHandle_t colaKits;
 //*****************************************************************************
 //
 // The error routine that is called if the driver library encounters an error.
@@ -109,13 +109,16 @@ void vApplicationMallocFailedHook(void)
 static portTASK_FUNCTION(ProductorTask, pvParameters)
 {
     (void)pvParameters;
-
+    PARAM_MENSAJE_PRODUCTO msg;
     for (;;)
     {
         vTaskDelay(pdMS_TO_TICKS(3000));
-        xSemaphoreGive(semProducto);
-        UARTprintf("Productor: componentes listos\n");
+        // xSemaphoreGive(semProducto);
+        msg.kit_id = (rand() % 100) + 1;
+        xQueueSend(colaKits, &msg, portMAX_DELAY);
+
         xSemaphoreTake(mutexUART, portMAX_DELAY);
+        UARTprintf("Productor: kit listo ID=%d\r\n", msg.kit_id);
         xSemaphoreGive(mutexUART);
     }
 }
@@ -126,24 +129,32 @@ static portTASK_FUNCTION(ConsumidorTask, pvParameters)
     PARAM_MENSAJE_PRODUCTO param;
     uint8_t frame[MAX_FRAME_SIZE];
     int32_t size;
+    uint32_t kit_id;
 
     for (;;)
     {
-        xSemaphoreTake(semProducto, portMAX_DELAY);
-        vTaskDelay(pdMS_TO_TICKS(3000));
-        contadorProductos++;
-        xSemaphoreTake(mutexUART, portMAX_DELAY);
-        UARTprintf("Producto ensamblado. Total: %d\r\n", contadorProductos);
-        xSemaphoreGive(mutexUART);
-        param.totalProductos = contadorProductos;
-
-        size = create_frame(frame, MENSAJE_PRODUCTO, &param, sizeof(param), MAX_FRAME_SIZE);
-
-        if (size > 0)
+        if (xQueueReceive(colaKits, &param, portMAX_DELAY) == pdPASS)
         {
-            xSemaphoreTake(mutexUSB, portMAX_DELAY);
-            send_frame(frame, size);
-            xSemaphoreGive(mutexUSB);
+            kit_id = param.kit_id;
+
+            // xSemaphoreTake(semProducto, portMAX_DELAY);
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            contadorProductos++;
+            param.totalProductos = contadorProductos;
+            param.kit_id = kit_id;
+
+            xSemaphoreTake(mutexUART, portMAX_DELAY);
+            UARTprintf("Producto ensamblado. Kit ID=%d Total=%d\r\n",
+                       kit_id, contadorProductos);
+            xSemaphoreGive(mutexUART);
+            size = create_frame(frame, MENSAJE_PRODUCTO, &param, sizeof(param), MAX_FRAME_SIZE);
+
+            if (size > 0)
+            {
+                xSemaphoreTake(mutexUSB, portMAX_DELAY);
+                send_frame(frame, size);
+                xSemaphoreGive(mutexUSB);
+            }
         }
     }
 }
@@ -309,10 +320,17 @@ int main(void)
             ;
 
     // Crear semáforo binario
-    semProducto = xSemaphoreCreateBinary();
+    /*semProducto = xSemaphoreCreateBinary();
     if (semProducto == NULL)
         while (1)
+            ;*/
+    colaKits = xQueueCreate(3, sizeof(PARAM_MENSAJE_PRODUCTO));
+
+    if (colaKits == NULL)
+    {
+        while (1)
             ;
+    }
     if (xTaskCreate(ProductorTask, "prod", 512, NULL, tskIDLE_PRIORITY + 1, NULL) != pdPASS)
     {
         while (1)
@@ -324,6 +342,7 @@ int main(void)
         while (1)
             ;
     }
+
     //
     // Pone en marcha el planificador. La llamada NO tiene retorno
     //

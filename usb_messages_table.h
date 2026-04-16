@@ -32,6 +32,7 @@ typedef struct
 typedef struct
 {
     uint32_t totalProductos;
+    uint32_t kit_id;
 } PARAM_MENSAJE_PRODUCTO;
 // #pragma pack()    //...Pero solo para los mensajes que voy a intercambiar, no para el resto
 
