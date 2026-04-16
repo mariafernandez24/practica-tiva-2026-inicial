@@ -108,23 +108,23 @@ void vApplicationMallocFailedHook(void)
 //*****************************************************************************
 static portTASK_FUNCTION(ProductorTask, pvParameters)
 {
-    (void)pvParameters;
+    PARAM_TAREA *params = (PARAM_TAREA *)pvParameters;
     PARAM_MENSAJE_PRODUCTO msg;
     for (;;)
     {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(params->periodo_ms));
         // xSemaphoreGive(semProducto);
         msg.kit_id = (rand() % 100) + 1;
         // xQueueSend(colaKits, &msg, portMAX_DELAY);
 
         if (xQueueSend(colaKits, &msg, 0) != pdPASS)
         {
-            GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, GPIO_PIN_1);
-            vTaskDelete(NULL);
+            GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, params->ledPin);
+            // vTaskDelete(NULL);
         }
         else
         {
-            GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0);
+            GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, 0);
         }
 
         xSemaphoreTake(mutexUART, portMAX_DELAY);
@@ -280,7 +280,6 @@ static portTASK_FUNCTION(USBMessageProcessingTask, pvParameters)
 int main(void)
 {
 
-    //
     // Reloj del sistema definido a 40MHz
     //
     MAP_SysCtlClockSet(SYSCTL_SYSDIV_5 | SYSCTL_USE_PLL | SYSCTL_XTAL_16MHZ | SYSCTL_OSC_MAIN);
@@ -341,7 +340,20 @@ int main(void)
         while (1)
             ;
     }
-    if (xTaskCreate(ProductorTask, "prod", 512, NULL, tskIDLE_PRIORITY + 1, NULL) != pdPASS)
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF))
+        ;
+    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_1);
+    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_3);
+    //
+    static PARAM_TAREA prod1 = {1, 1000, GPIO_PIN_1}; // rojo
+    static PARAM_TAREA prod2 = {2, 3000, GPIO_PIN_3}; // verde
+    if (xTaskCreate(ProductorTask, "prod1", 512, &prod1, tskIDLE_PRIORITY + 1, NULL) != pdPASS)
+    {
+        while (1)
+            ;
+    }
+    if (xTaskCreate(ProductorTask, "prod2", 512, &prod2, tskIDLE_PRIORITY + 1, NULL) != pdPASS)
     {
         while (1)
             ;
@@ -354,11 +366,10 @@ int main(void)
     }
 
     // parte led
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
-    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF))
-        ;
+    // SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+    //  while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF))
+    //  ;
 
-    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_1);
     //
     // Pone en marcha el planificador. La llamada NO tiene retorno
     //
