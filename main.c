@@ -90,7 +90,6 @@ void vApplicationTickHook(void)
     }
     // return;
 }
-
 void vApplicationIdleHook(void)
 {
     SysCtlSleep();
