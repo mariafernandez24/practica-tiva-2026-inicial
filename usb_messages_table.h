@@ -15,6 +15,7 @@ typedef enum
     MENSAJE_NO_IMPLEMENTADO,
     MENSAJE_PING,
     MENSAJE_PRODUCTO,
+    MENSAJE_START_BIT,
     // etc, etc...
 } messageTypes;
 

@@ -41,6 +41,7 @@
 #include "usb_messages_table.h"
 #include "config.h"
 #include "math.h"
+#include "event_groups.h"
 
 // Variables globales "main"
 uint32_t g_ui32CPUUsage;
@@ -48,6 +49,8 @@ uint32_t g_ui32SystemClock;
 SemaphoreHandle_t mutexUSB, mutexUART; // Para proteccion del canal USB y el caal UART -terminal-, ya que ahora lo van a usar varias tareas distintas
 SemaphoreHandle_t semProducto;
 QueueHandle_t colaKits;
+EventGroupHandle_t eventGroup;
+#define START_BIT (1 << 0)
 //*****************************************************************************
 //
 // The error routine that is called if the driver library encounters an error.
@@ -110,11 +113,18 @@ static portTASK_FUNCTION(ProductorTask, pvParameters)
 {
     PARAM_TAREA *params = (PARAM_TAREA *)pvParameters;
     PARAM_MENSAJE_PRODUCTO msg;
+    xEventGroupWaitBits(eventGroup,
+                        START_BIT,
+                        pdFALSE,
+                        pdFALSE,
+                        portMAX_DELAY);
+
     for (;;)
     {
         vTaskDelay(pdMS_TO_TICKS(params->periodo_ms));
         // xSemaphoreGive(semProducto);
         msg.kit_id = (rand() % 100) + 1;
+        msg.IDProd = params->IDProd;
         // xQueueSend(colaKits, &msg, portMAX_DELAY);
 
         if (xQueueSend(colaKits, &msg, 0) != pdPASS)
@@ -128,7 +138,7 @@ static portTASK_FUNCTION(ProductorTask, pvParameters)
         }
 
         xSemaphoreTake(mutexUART, portMAX_DELAY);
-        UARTprintf("Productor: kit listo ID=%d\r\n", msg.kit_id);
+        UARTprintf("Prod %d -> kit %d\n", msg.IDProd, msg.kit_id);
         xSemaphoreGive(mutexUART);
     }
 }
@@ -140,6 +150,11 @@ static portTASK_FUNCTION(ConsumidorTask, pvParameters)
     uint8_t frame[MAX_FRAME_SIZE];
     int32_t size;
     uint32_t kit_id;
+    xEventGroupWaitBits(eventGroup,
+                        START_BIT,
+                        pdFALSE,
+                        pdFALSE,
+                        portMAX_DELAY);
 
     for (;;)
     {
@@ -152,10 +167,11 @@ static portTASK_FUNCTION(ConsumidorTask, pvParameters)
             contadorProductos++;
             param.totalProductos = contadorProductos;
             param.kit_id = kit_id;
+            +
 
-            xSemaphoreTake(mutexUART, portMAX_DELAY);
+                xSemaphoreTake(mutexUART, portMAX_DELAY);
             UARTprintf("Producto ensamblado. Kit ID=%d Total=%d\r\n",
-                       kit_id, contadorProductos);
+                       kit_id, contadorProductos, param.IDProd);
             xSemaphoreGive(mutexUART);
             size = create_frame(frame, MENSAJE_PRODUCTO, &param, sizeof(param), MAX_FRAME_SIZE);
 
@@ -246,6 +262,13 @@ static portTASK_FUNCTION(USBMessageProcessingTask, pvParameters)
                         }
                     }
                     break;
+                case MENSAJE_START_BIT:
+                {
+                    UARTprintf("START recibido -> arrancando sistema\r\n");
+
+                    xEventGroupSetBits(eventGroup, START_BIT);
+                    break;
+                }
                 default:
                 {
                     PARAM_MENSAJE_NO_IMPLEMENTADO parametro;
@@ -296,7 +319,7 @@ int main(void)
     // (y por tanto este no se deberia utilizar para otra cosa).
     CPUUsageInit(g_ui32SystemClock, configTICK_RATE_HZ / 10, 3);
 
-    /**                                              Creacion de tareas 									**/
+    /**                                              Creacion de tareas                                     **/
     // Inicializa el sistema de depuración e interprete de comandos por terminal UART
     if (initCommandLine(256, tskIDLE_PRIORITY + 1) != pdPASS)
     {
@@ -333,6 +356,12 @@ int main(void)
     if (semProducto == NULL)
         while (1)
             ;*/
+
+    eventGroup = xEventGroupCreate();
+    if (eventGroup == NULL)
+        while (1)
+            ;
+
     colaKits = xQueueCreate(3, sizeof(PARAM_MENSAJE_PRODUCTO));
 
     if (colaKits == NULL)
@@ -381,3 +410,4 @@ int main(void)
         // Si llego aqui es que algo raro ha pasado
     }
 }
+
