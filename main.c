@@ -5,7 +5,7 @@
 //
 //  Estructura de aplicacion basica para el desarrollo de aplicaciones genericas
 //  basada en la TIVA, en las que existe un intercambio de mensajes con un interfaz
-//  grÃ¡fico (GUI) Qt.
+//  gráfico (GUI) Qt.
 //  La aplicacion se basa en un intercambio de mensajes con ordenes e informacion, a traves  de la
 //  configuracion de un perfil CDC de USB (emulacion de puerto serie) y un protocolo
 //  de comunicacion con el PC que permite recibir ciertas ordenes y enviar determinados datos en respuesta.
@@ -22,7 +22,7 @@
 #include "driverlib/gpio.h"      // TIVA: Funciones API de GPIO
 #include "driverlib/pin_map.h"   // TIVA: Mapa de pines del chip
 #include "driverlib/rom.h"       // TIVA: Funciones API incluidas en ROM de micro (ROM_)
-#include "driverlib/rom_map.h"   // TIVA: Para usar la opciÃ³n MAP en las funciones API (MAP_)
+#include "driverlib/rom_map.h"   // TIVA: Para usar la opción MAP en las funciones API (MAP_)
 #include "driverlib/sysctl.h"    // TIVA: Funciones API control del sistema
 #include "driverlib/uart.h"      // TIVA: Funciones API manejo UART
 #include "driverlib/interrupt.h" // TIVA: Funciones API manejo de interrupciones
@@ -41,17 +41,13 @@
 #include "usb_messages_table.h"
 #include "config.h"
 #include "math.h"
-#include "event_groups.h"
 
-#define START_BIT (1 << 0)
 // Variables globales "main"
 uint32_t g_ui32CPUUsage;
 uint32_t g_ui32SystemClock;
 SemaphoreHandle_t mutexUSB, mutexUART; // Para proteccion del canal USB y el caal UART -terminal-, ya que ahora lo van a usar varias tareas distintas
-SemaphoreHandle_t semProducto;         // Semáforo binario
-uint32_t contadorProductos = 0;        // Total productos generados
-xQueueHandle xQueueKits;
-EventGroupHandle_t eventGroup;
+SemaphoreHandle_t semProducto;
+
 //*****************************************************************************
 //
 // The error routine that is called if the driver library encounters an error.
@@ -111,227 +107,40 @@ void vApplicationMallocFailedHook(void)
 // A continuacion van las tareas...
 //
 //*****************************************************************************
+static portTASK_FUNCTION(ProductorTask, pvParameters)
+{
+    (void)pvParameters;
+
+    for (;;)
+    {
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        xSemaphoreGive(semProducto);
+        UARTprintf("Productor: componentes listos\n");
+        xSemaphoreTake(mutexUART, portMAX_DELAY);
+        xSemaphoreGive(mutexUART);
+    }
+}
+static portTASK_FUNCTION(ConsumidorTask, pvParameters)
+{
+    (void)pvParameters;
+    uint32_t contadorProductos = 0;
+
+    for (;;)
+    {
+        xSemaphoreTake(semProducto, portMAX_DELAY);
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        contadorProductos++;
+        xSemaphoreTake(mutexUART, portMAX_DELAY);
+        UARTprintf("Producto ensamblado. Total: %d\r\n", contadorProductos);
+        xSemaphoreGive(mutexUART);
+    }
+}
 
 //*****************************************************************************
 //
 // Codigo de tarea que procesa los mensajes recibidos a traves del canal USB
 //
 //*****************************************************************************
-/*static portTASK_FUNCTION(ProductorTask, pvParameters)
-{
-    (void) pvParameters;
-    PARAM_CONTADOR msg;
-
-    for(;;)
-    {
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Periodo de 3s
-        msg.kit_id = (rand() % 10) + 1;
-
-        // Señaliza que hay un nuevo producto
-        //xSemaphoreGive(semProducto);
-        // contador no se usa aquí todavía
-         msg.contador = 0;
-         xQueueSend(xQueueKits, &msg, portMAX_DELAY);
-        xSemaphoreTake(mutexUART, portMAX_DELAY);
-        UARTprintf("Kit generado: %d\n", msg.kit_id);
-        xSemaphoreGive(mutexUART);
-    }
-}
-//esta
-static portTASK_FUNCTION(ProductorTask, pvParameters)
-        {
-            (void) pvParameters;
-
-            PARAM_CONTADOR msg;
-            uint32_t ui32KitID;
-
-            for(;;)
-            {
-                vTaskDelay(pdMS_TO_TICKS(1000));
-
-                ui32KitID = (rand() % 10) + 1;
-
-                msg.kit_id = ui32KitID;
-                msg.contador = 0;
-
-                // Intento de envío
-                if (xQueueSend(xQueueKits, &msg, 0) != pdPASS)
-                {
-                    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, GPIO_PIN_1); // cola llena
-                }
-                else
-                {
-                    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0);
-
-                    xSemaphoreTake(mutexUART, portMAX_DELAY);
-                    UARTprintf("Kit generado: %d\n", msg.kit_id);
-                    xSemaphoreGive(mutexUART);
-                }
-            }
-        }
-
-
-static portTASK_FUNCTION(ConsumidorTask, pvParameters)
-{
-    (void) pvParameters;
-
-    PARAM_CONTADOR msg;
-    uint8_t frame[MAX_FRAME_SIZE];
-    int32_t numDatos;
-
-    for(;;)
-    {
-        // Espera a que haya producto
-        xQueueReceive(xQueueKits, &msg, portMAX_DELAY);
-
-        // Simula ensamblaje (3s)
-        vTaskDelay(pdMS_TO_TICKS(3000));
-
-        contadorProductos++;
-
-        xSemaphoreTake(mutexUART, portMAX_DELAY);
-        UARTprintf("Producto %d ensamblado (kit %d)\n",
-                   contadorProductos, msg.kit_id);
-        xSemaphoreGive(mutexUART);
-
-        // -------- ENVÍO POR USB A QT --------
-        PARAM_CONTADOR parametro;
-
-        parametro.contador = contadorProductos;
-        parametro.kit_id = msg.kit_id;
-
-        numDatos = create_frame(frame,
-                               MENSAJE_CONTADOR,
-                               &parametro,
-                               sizeof(parametro),
-                               MAX_FRAME_SIZE);
-
-        if(numDatos >= 0)
-        {
-            xSemaphoreTake(mutexUSB, portMAX_DELAY);
-            send_frame(frame, numDatos);
-            xSemaphoreGive(mutexUSB);
-        }
-    }
-}
-static portTASK_FUNCTION(ConsumidorTask, pvParameters)
-{
-    (void) pvParameters;
-    PARAM_CONTADOR msg_received;
-    uint8_t frame[MAX_FRAME_SIZE];
-    int32_t numDatos;
-
-    for(;;)
-    {
-        // Espera bloqueante: despierta cuando hay algo en la cola
-        if (xQueueReceive(xQueueKits, &msg_received, portMAX_DELAY) == pdPASS)
-        {
-            // Simula ensamblaje (3s)
-            vTaskDelay(pdMS_TO_TICKS(3000));
-
-            contadorProductos++; // Incrementamos el total real
-            UARTprintf("Producto %d ensamblado (kit %d)\n",
-                             contadorProductos, msg.kit_id);
-
-
-            // Preparamos el mensaje para Qt
-            msg_received.contador = contadorProductos; // Actualizamos el contador en el mensaje
-
-            numDatos = create_frame(frame, MENSAJE_CONTADOR, &msg_received,
-                                    sizeof(msg_received), MAX_FRAME_SIZE);
-
-            if(numDatos >= 0)
-            {
-                // Protección del canal USB con Mutex [cite: 20]
-                xSemaphoreTake(mutexUSB, portMAX_DELAY);
-                send_frame(frame, numDatos);
-                xSemaphoreGive(mutexUSB);
-            }
-        }
-    }
-}*/
-static portTASK_FUNCTION(ProductorTask, pvParameters)
-{
-    PARAM_PRODUCTOR *params = (PARAM_PRODUCTOR *)pvParameters;
-
-    PARAM_CONTADOR msg;
-
-    uint32_t IDProd = params->IDProd;
-    uint32_t periodo = params->periodo_ms;
-    uint32_t led = params->ledPin;
-    xEventGroupWaitBits(eventGroup,
-                        START_BIT,
-                        pdFALSE,
-                        pdFALSE,
-                        portMAX_DELAY);
-    for (;;)
-    {
-        vTaskDelay(pdMS_TO_TICKS(periodo));
-
-        msg.kit_id = (rand() % 100) + 1;
-        msg.contador = 0;
-        msg.IDProd = IDProd;
-
-        if (xQueueSend(xQueueKits, &msg, 0) != pdPASS)
-        {
-            GPIOPinWrite(GPIO_PORTF_BASE, led, led);
-            // eliminar la tarea y luego quitarla
-        }
-        else
-        {
-            GPIOPinWrite(GPIO_PORTF_BASE, led, 0);
-
-            xSemaphoreTake(mutexUART, portMAX_DELAY);
-            UARTprintf("Prod %d -> kit %d\n", IDProd, msg.kit_id);
-            xSemaphoreGive(mutexUART);
-        }
-    }
-}
-static portTASK_FUNCTION(ConsumidorTask, pvParameters)
-{
-    (void)pvParameters;
-
-    PARAM_CONTADOR msg_received;
-    uint8_t frame[MAX_FRAME_SIZE];
-    int32_t numDatos;
-
-    xEventGroupWaitBits(eventGroup,
-                        START_BIT,
-                        pdFALSE,
-                        pdFALSE,
-                        portMAX_DELAY);
-
-    for (;;)
-    {
-        if (xQueueReceive(xQueueKits, &msg_received, portMAX_DELAY) == pdPASS)
-        {
-            vTaskDelay(pdMS_TO_TICKS(3000));
-
-            contadorProductos++;
-
-            xSemaphoreTake(mutexUART, portMAX_DELAY);
-            UARTprintf("Producto %d ensamblado (kit %d, prod %d)\n",
-                       contadorProductos,
-                       msg_received.kit_id,
-                       msg_received.IDProd);
-            xSemaphoreGive(mutexUART);
-
-            msg_received.contador = contadorProductos;
-
-            numDatos = create_frame(frame, MENSAJE_CONTADOR,
-                                    &msg_received,
-                                    sizeof(msg_received),
-                                    MAX_FRAME_SIZE);
-
-            if (numDatos >= 0)
-            {
-                xSemaphoreTake(mutexUSB, portMAX_DELAY);
-                send_frame(frame, numDatos);
-                xSemaphoreGive(mutexUSB);
-            }
-        }
-    }
-}
 static portTASK_FUNCTION(USBMessageProcessingTask, pvParameters)
 {
 
@@ -358,7 +167,7 @@ static portTASK_FUNCTION(USBMessageProcessingTask, pvParameters)
         i32Numdatos = receive_frame(pui8Frame, MAX_FRAME_SIZE); // Esta funcion es bloqueante
         if (i32Numdatos > 0)
         {                                                                     // Si no hay error, proceso la trama que ha llegado.
-            i32Numdatos = destuff_and_check_checksum(pui8Frame, i32Numdatos); // Primero, "destuffing" y comprobaciÃ³n checksum
+            i32Numdatos = destuff_and_check_checksum(pui8Frame, i32Numdatos); // Primero, "destuffing" y comprobación checksum
             if (i32Numdatos < 0)
             {
                 // Error de checksum (PROT_ERROR_BAD_CHECKSUM), ignorar el paquete
@@ -404,15 +213,6 @@ static portTASK_FUNCTION(USBMessageProcessingTask, pvParameters)
                         }
                     }
                     break;
-                case MENSAJE_INICIO:
-                {
-                    xEventGroupSetBits(eventGroup, START_BIT);
-
-                    xSemaphoreTake(mutexUART, portMAX_DELAY);
-                    // UARTprintf("Sistema INICIADO desde Qt\n");
-                    xSemaphoreGive(mutexUART);
-                }
-                break;
                 default:
                 {
                     PARAM_MENSAJE_NO_IMPLEMENTADO parametro;
@@ -446,7 +246,7 @@ static portTASK_FUNCTION(USBMessageProcessingTask, pvParameters)
 //*****************************************************************************
 int main(void)
 {
-    uint16_t ui16Period, ui16DutyCycle;
+
     //
     // Reloj del sistema definido a 40MHz
     //
@@ -463,16 +263,9 @@ int main(void)
     // Para eso utiliza un timer, que aqui hemos puesto que sea el TIMER3 (ultimo parametro que se pasa a la funcion)
     // (y por tanto este no se deberia utilizar para otra cosa).
     CPUUsageInit(g_ui32SystemClock, configTICK_RATE_HZ / 10, 3);
-    MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
 
-    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_1); // rojo
-    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0);
-
-    // Activamos el otro led
-    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_2);
-    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0);
-    /**                                              Creacion de tareas                                     **/
-    // Inicializa el sistema de depuraciÃ³n e interprete de comandos por terminal UART
+    /**                                              Creacion de tareas 									**/
+    // Inicializa el sistema de depuración e interprete de comandos por terminal UART
     if (initCommandLine(256, tskIDLE_PRIORITY + 1) != pdPASS)
     {
         while (1)
@@ -492,20 +285,6 @@ int main(void)
     //
     // A partir de aqui se crean las tareas de usuario, y los recursos IPC que se vayan a necesitar
     //
-    // Crear semáforo binario
-    // semProducto = xSemaphoreCreateBinary();
-    // if(semProducto == NULL)
-    //  while(1);
-    xQueueKits = xQueueCreate(10, sizeof(PARAM_CONTADOR));
-    // Crear tareas
-    // xTaskCreate(ProductorTask, "prod", 256, NULL, tskIDLE_PRIORITY + 1, NULL);
-    // xTaskCreate(ConsumidorTask, "cons", 256, NULL, tskIDLE_PRIORITY + 1, NULL);
-    xTaskCreate(ConsumidorTask, "cons", 256, NULL, tskIDLE_PRIORITY + 1, NULL);
-    static PARAM_PRODUCTOR prod1 = {1, 1000, GPIO_PIN_1};
-    static PARAM_PRODUCTOR prod2 = {2, 10000, GPIO_PIN_2};
-
-    xTaskCreate(ProductorTask, "prod1", 256, &prod1, tskIDLE_PRIORITY + 1, NULL);
-    xTaskCreate(ProductorTask, "prod2", 256, &prod2, tskIDLE_PRIORITY + 1, NULL);
 
     mutexUART = xSemaphoreCreateMutex();
     if (NULL == mutexUART)
@@ -517,10 +296,22 @@ int main(void)
         while (1)
             ;
 
-    eventGroup = xEventGroupCreate();
-    if (eventGroup == NULL)
+    // Crear semáforo binario
+    semProducto = xSemaphoreCreateBinary();
+    if (semProducto == NULL)
         while (1)
             ;
+    if (xTaskCreate(ProductorTask, "prod", 512, NULL, tskIDLE_PRIORITY + 1, NULL) != pdPASS)
+    {
+        while (1)
+            ;
+    }
+
+    if (xTaskCreate(ConsumidorTask, "cons", 512, NULL, tskIDLE_PRIORITY + 1, NULL) != pdPASS)
+    {
+        while (1)
+            ;
+    }
     //
     // Pone en marcha el planificador. La llamada NO tiene retorno
     //
@@ -531,7 +322,4 @@ int main(void)
     {
         // Si llego aqui es que algo raro ha pasado
     }
-
-    // Nueva funcionalidad
 }
-// void GPIOPinTypePWM (uint32_t ui32Port, uint8_t ui8Pins) Configures pin(s) for use by the PWM peripheral
