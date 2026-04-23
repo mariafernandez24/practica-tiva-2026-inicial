@@ -61,6 +61,7 @@ extern void vPortSVCHandler(void);
 extern void xPortSysTickHandler(void);
 extern void UARTStdioIntHandler(void);
 extern void USB0DeviceIntHandler(void);
+extern void ADC0SS0_Handler(void);
 //*****************************************************************************
 //
 // The vector table.  Note that the proper constructs must be placed on this to
@@ -102,7 +103,7 @@ void (* const g_pfnVectors[])(void) =
  IntDefaultHandler,                      // PWM Generator 1
  IntDefaultHandler,                      // PWM Generator 2
  IntDefaultHandler,                      // Quadrature Encoder 0
- IntDefaultHandler,                      // ADC Sequence 0
+ IntDefaultHandler,                        // ADC Sequence 0
  IntDefaultHandler,                      // ADC Sequence 1
  IntDefaultHandler,                      // ADC Sequence 2
  IntDefaultHandler,                      // ADC Sequence 3

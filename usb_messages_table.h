@@ -16,6 +16,8 @@ typedef enum
     MENSAJE_PING,
     MENSAJE_PRODUCTO,
     MENSAJE_START_BIT,
+    MENSAJE_TEMPERATURA,
+    MENSAJE_FIN_PROCESO
     // etc, etc...
 } messageTypes;
 
@@ -43,6 +45,12 @@ typedef struct
     uint32_t periodo_ms;
     uint32_t ledPin;
 } PACKED PARAM_TAREA;
+
+typedef struct
+{
+    float temp_ambiente;
+    float temp_soldadura;
+} PARAM_TEMPERATURA;
 // #pragma pack()    //...Pero solo para los mensajes que voy a intercambiar, no para el resto
 
 #endif

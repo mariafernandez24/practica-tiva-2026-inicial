@@ -1,3 +1,4 @@
+
 //*****************************************************************************
 //
 // Codigo de partida comunicacion TIVA-QT
@@ -42,6 +43,14 @@
 #include "config.h"
 #include "math.h"
 #include "event_groups.h"
+#include "queue.h"
+#include <stdint.h>
+#include <stdbool.h>
+#include "inc/hw_memmap.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/pwm.h"
+#include "driverlib/pin_map.h"
+#include "driverlib/gpio.h"
 
 // Variables globales "main"
 uint32_t g_ui32CPUUsage;
@@ -50,7 +59,15 @@ SemaphoreHandle_t mutexUSB, mutexUART; // Para proteccion del canal USB y el caa
 SemaphoreHandle_t semProducto;
 QueueHandle_t colaKits;
 EventGroupHandle_t eventGroup;
+static QueueHandle_t cola1;
+static QueueHandle_t cola2;
+static QueueSetHandle_t grupo_colas;
+static QueueHandle_t mailboxTemp;
+
 #define START_BIT (1 << 0)
+#define POSICIONES_COLA 5
+
+void PWM_Timer_Init(void);
 //*****************************************************************************
 //
 // The error routine that is called if the driver library encounters an error.
@@ -136,7 +153,31 @@ static portTASK_FUNCTION(ProductorTask, pvParameters)
         {
             GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, 0);
         }
+        if (params->IDProd == 1)
+        {
 
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            if (xQueueSend(cola1, &msg, 0) != pdPASS)
+            {
+                GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, params->ledPin);
+            }
+            else
+            {
+                GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, 0);
+            }
+        }
+        else
+        {
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            if (xQueueSend(cola2, &msg, 0) != pdPASS)
+            {
+                GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, params->ledPin);
+            }
+            else
+            {
+                GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, 0);
+            }
+        }
         xSemaphoreTake(mutexUART, portMAX_DELAY);
         UARTprintf("Prod %d -> kit %d\n", msg.IDProd, msg.kit_id);
         xSemaphoreGive(mutexUART);
@@ -150,6 +191,7 @@ static portTASK_FUNCTION(ConsumidorTask, pvParameters)
     uint8_t frame[MAX_FRAME_SIZE];
     int32_t size;
     uint32_t kit_id;
+
     xEventGroupWaitBits(eventGroup,
                         START_BIT,
                         pdFALSE,
@@ -158,29 +200,38 @@ static portTASK_FUNCTION(ConsumidorTask, pvParameters)
 
     for (;;)
     {
-        if (xQueueReceive(colaKits, &param, portMAX_DELAY) == pdPASS)
+        QueueSetMemberHandle_t cola_activa;
+
+        cola_activa = xQueueSelectFromSet(grupo_colas, portMAX_DELAY);
+
+        if (cola_activa == cola1)
         {
-            kit_id = param.kit_id;
+            xQueueReceive(cola1, &param, 0);
+        }
+        else if (cola_activa == cola2)
+        {
+            xQueueReceive(cola2, &param, 0);
+        }
 
-            // xSemaphoreTake(semProducto, portMAX_DELAY);
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            contadorProductos++;
-            param.totalProductos = contadorProductos;
-            param.kit_id = kit_id;
-            +
+        kit_id = param.kit_id;
 
-                xSemaphoreTake(mutexUART, portMAX_DELAY);
-            UARTprintf("Producto ensamblado. Kit ID=%d Total=%d\r\n",
-                       kit_id, contadorProductos, param.IDProd);
-            xSemaphoreGive(mutexUART);
-            size = create_frame(frame, MENSAJE_PRODUCTO, &param, sizeof(param), MAX_FRAME_SIZE);
+        vTaskDelay(pdMS_TO_TICKS(3000));
 
-            if (size > 0)
-            {
-                xSemaphoreTake(mutexUSB, portMAX_DELAY);
-                send_frame(frame, size);
-                xSemaphoreGive(mutexUSB);
-            }
+        contadorProductos++;
+        param.totalProductos = contadorProductos;
+
+        xSemaphoreTake(mutexUART, portMAX_DELAY);
+        UARTprintf("Producto ensamblado. Prod=%d Kit ID=%d Total=%d\r\n",
+                   param.IDProd, kit_id, contadorProductos);
+        xSemaphoreGive(mutexUART);
+
+        size = create_frame(frame, MENSAJE_PRODUCTO, &param, sizeof(param), MAX_FRAME_SIZE);
+
+        if (size > 0)
+        {
+            xSemaphoreTake(mutexUSB, portMAX_DELAY);
+            send_frame(frame, size);
+            xSemaphoreGive(mutexUSB);
         }
     }
 }
@@ -265,8 +316,8 @@ static portTASK_FUNCTION(USBMessageProcessingTask, pvParameters)
                 case MENSAJE_START_BIT:
                 {
                     UARTprintf("START recibido -> arrancando sistema\r\n");
-
                     xEventGroupSetBits(eventGroup, START_BIT);
+                    PWM_Timer_Init();
                     break;
                 }
                 default:
@@ -293,6 +344,38 @@ static portTASK_FUNCTION(USBMessageProcessingTask, pvParameters)
             // Procesamiento del error
         }
     }
+}
+void PWM_Timer_Init(void)
+{
+    uint32_t pwmClock;
+    uint32_t period;
+    uint32_t duty = 50;
+
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);
+
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_PWM0))
+        ;
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOB))
+        ;
+
+    GPIOPinConfigure(GPIO_PB6_M0PWM0);
+    GPIOPinTypePWM(GPIO_PORTB_BASE, GPIO_PIN_6);
+
+    SysCtlPWMClockSet(SYSCTL_PWMDIV_64);
+
+    pwmClock = SysCtlClockGet() / 64;
+
+    period = pwmClock / 10;
+
+    PWMGenConfigure(PWM0_BASE, PWM_GEN_0, PWM_GEN_MODE_DOWN);
+    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_0, period);
+
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, (period * duty) / 100);
+
+    PWMGenEnable(PWM0_BASE, PWM_GEN_0);
+    PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
+    SysCtlPeripheralSleepEnable(SYSCTL_PERIPH_PWM0);
 }
 
 //*****************************************************************************
@@ -356,19 +439,49 @@ int main(void)
     if (semProducto == NULL)
         while (1)
             ;*/
-
+    RGBInit(1);
+    RGBEnable();
     eventGroup = xEventGroupCreate();
     if (eventGroup == NULL)
         while (1)
             ;
 
-    colaKits = xQueueCreate(3, sizeof(PARAM_MENSAJE_PRODUCTO));
+    //  colaKits = xQueueCreate(3, sizeof(PARAM_MENSAJE_PRODUCTO));
 
-    if (colaKits == NULL)
+    cola1 = xQueueCreate(POSICIONES_COLA, sizeof(PARAM_MENSAJE_PRODUCTO));
+    if (NULL == cola1)
+        while (1)
+            ;
+
+    cola2 = xQueueCreate(POSICIONES_COLA, sizeof(PARAM_MENSAJE_PRODUCTO));
+    if (NULL == cola2)
+        while (1)
+            ;
+
+    grupo_colas = xQueueCreateSet(POSICIONES_COLA * 2);
+    if (NULL == grupo_colas)
+        while (1)
+            ;
+    if (xQueueAddToSet(cola1, grupo_colas) != pdPASS)
     {
         while (1)
             ;
     }
+    if (xQueueAddToSet(cola2, grupo_colas) != pdPASS)
+    {
+        while (1)
+            ;
+    }
+    /* if (colaKits == NULL)
+     {
+         while (1)
+             ;
+     }*/
+    mailboxTemp = xQueueCreate(1, sizeof(PARAM_TEMPERATURA));
+    if (mailboxTemp == NULL)
+        while (1)
+            ;
+
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
     while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF))
         ;
@@ -398,6 +511,7 @@ int main(void)
     // SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
     //  while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF))
     //  ;
+    // grupo de colas
 
     //
     // Pone en marcha el planificador. La llamada NO tiene retorno
@@ -410,4 +524,3 @@ int main(void)
         // Si llego aqui es que algo raro ha pasado
     }
 }
-
