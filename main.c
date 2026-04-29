@@ -62,10 +62,19 @@ EventGroupHandle_t eventGroup;
 static QueueHandle_t cola1;
 static QueueHandle_t cola2;
 static QueueSetHandle_t grupo_colas;
-static QueueHandle_t mailboxTemp;
+static QueueHandle_t mailbox_freertos;
 
 #define START_BIT (1 << 0)
 #define POSICIONES_COLA 5
+
+// ANTONIOOOO
+uint32_t resistencia;
+
+uint32_t ui32ADC0Value[2];
+volatile uint32_t ui32TempAvg;
+volatile uint32_t ui32TempValueC;
+volatile uint32_t ui32TempValueF;
+uint32_t envio_mail[2];
 
 void PWM_Timer_Init(void);
 //*****************************************************************************
@@ -144,15 +153,15 @@ static portTASK_FUNCTION(ProductorTask, pvParameters)
         msg.IDProd = params->IDProd;
         // xQueueSend(colaKits, &msg, portMAX_DELAY);
 
-        if (xQueueSend(colaKits, &msg, 0) != pdPASS)
-        {
-            GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, params->ledPin);
-            // vTaskDelete(NULL);
-        }
-        else
-        {
-            GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, 0);
-        }
+        /*if (xQueueSend(colaKits, &msg, 0) != pdPASS)
+         {
+             GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, params->ledPin);
+             vTaskDelete(NULL);
+         }
+         else
+         {
+             GPIOPinWrite(GPIO_PORTF_BASE, params->ledPin, 0);
+         }*/
         if (params->IDProd == 1)
         {
 
@@ -317,7 +326,17 @@ static portTASK_FUNCTION(USBMessageProcessingTask, pvParameters)
                 {
                     UARTprintf("START recibido -> arrancando sistema\r\n");
                     xEventGroupSetBits(eventGroup, START_BIT);
-                    PWM_Timer_Init();
+                    // PWM_Timer_Init();
+                    //  ==========================================================
+                    // IMPORTANTE:
+                    // El sistema NO genera interrupciones del ADC hasta que Qt
+                    // envía la orden de START.
+                    //
+                    // Esto evita que el Timer2 dispare el ADC antes de que el
+                    // sistema esté completamente inicializado.
+                    // ==========================================================
+
+                    TimerEnable(TIMER2_BASE, TIMER_A);
                     break;
                 }
                 default:
@@ -345,6 +364,7 @@ static portTASK_FUNCTION(USBMessageProcessingTask, pvParameters)
         }
     }
 }
+
 void PWM_Timer_Init(void)
 {
     uint32_t pwmClock;
@@ -377,12 +397,267 @@ void PWM_Timer_Init(void)
     PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
     SysCtlPeripheralSleepEnable(SYSCTL_PERIPH_PWM0);
 }
+/*
+void ADC_Timer_Init(void)
+{
+    // Activar periféricos
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_ADC0);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE);
 
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_ADC0))
+        ;
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_TIMER0))
+        ;
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOE))
+        ;
+
+    // PE3
+    GPIOPinTypeADC(GPIO_PORTE_BASE, GPIO_PIN_3);
+
+    // Timer a 1 Hz
+    TimerConfigure(TIMER0_BASE, TIMER_CFG_PERIODIC);
+    TimerLoadSet(TIMER0_BASE, TIMER_A, g_ui32SystemClock);
+
+    // Trigger ADC desde timer
+    TimerControlTrigger(TIMER0_BASE, TIMER_A, true);
+
+    // Configurar ADC (Secuencia 0)
+    ADCSequenceConfigure(ADC0_BASE, 0, ADC_TRIGGER_TIMER, 0);
+
+    // Paso 0: sensor temperatura interno
+    ADCSequenceStepConfigure(ADC0_BASE, 0, 0, ADC_CTL_TS);
+
+    // Paso 1: potenciómetro (AIN0) + interrupción
+    ADCSequenceStepConfigure(ADC0_BASE, 0, 1,
+                             ADC_CTL_CH0 | ADC_CTL_IE | ADC_CTL_END);
+
+    ADCSequenceEnable(ADC0_BASE, 0);
+
+    ADCIntClear(ADC0_BASE, 0);
+    ADCIntEnable(ADC0_BASE, 0);
+
+    // Interrupciones
+    IntPrioritySet(INT_ADC0SS0, 5 << 5);
+    IntEnable(INT_ADC0SS0);
+
+    TimerEnable(TIMER0_BASE, TIMER_A);
+}
+void ADC0SS0_Handler(void)
+{
+    uint32_t valores[2];
+    PARAM_TEMPERATURA temp;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    ADCIntClear(ADC0_BASE, 0);
+    ADCSequenceDataGet(ADC0_BASE, 0, valores);
+
+    // Temperatura ambiente (sensor interno)
+    temp.temp_ambiente =
+        147.5 - ((75.0 * 3.3 * valores[0]) / 4096.0);
+
+    // Temperatura soldadura (potenciómetro)
+    temp.temp_soldadura =
+        300.0 + (150.0 * valores[1] / 4095.0);
+
+    // Mailbox (sobrescritura)
+    xQueueOverwriteFromISR(mailboxTemp,
+                           &temp,
+                           &xHigherPriorityTaskWoken);
+
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+static portTASK_FUNCTION(TemperaturasTask, pvParameters)
+{
+    PARAM_TEMPERATURA temp;
+    uint8_t frame[MAX_FRAME_SIZE];
+    int32_t size;
+
+    for (;;)
+    {
+        if (xQueueReceive(mailboxTemp, &temp, portMAX_DELAY) == pdPASS)
+        {
+            // DEBUG UART
+            xSemaphoreTake(mutexUART, portMAX_DELAY);
+            UARTprintf("Temp -> Amb: %.2f  Sold: %.2f\n",
+                       temp.temp_ambiente,
+                       temp.temp_soldadura);
+            xSemaphoreGive(mutexUART);
+
+            // Enviar a Qt
+            size = create_frame(frame,
+                                MENSAJE_TEMPERATURA,
+                                &temp,
+                                sizeof(temp),
+                                MAX_FRAME_SIZE);
+
+            if (size > 0)
+            {
+                xSemaphoreTake(mutexUSB, portMAX_DELAY);
+                send_frame(frame, size);
+                xSemaphoreGive(mutexUSB);
+            }
+
+
+            float brillo = (temp.temp_soldadura - 300.0) / 150.0;
+
+            if (brillo < 0)
+                brillo = 0;
+            if (brillo > 1)
+                brillo = 1;
+
+            uint32_t color[3];
+
+            color[0] = (uint32_t)(brillo * 255); // Rojo
+            color[1] = 0;
+            color[2] = 0;
+
+            RGBColorSet(color);
+            RGBIntensitySet(1.0f);
+        }
+    }
+}*/
+
+// ANTONIOOO
+void ADC0IntHandler(void)
+{
+    // Lee las muestras obtenidas a un array
+    ADCSequenceDataGet(ADC0_BASE, 1, ui32ADC0Value);
+    // en value[0] recurro al valor obtenido de la temperatura, en value[1] el del potenciometro
+    //  Calculamos la temperatura media como la media de las muestras de los 4 conversores
+    ui32TempAvg = ui32ADC0Value[0];
+    resistencia = ui32ADC0Value[1]; // recibo un valor entre 0 y 4095 segun como de girado esté girado el tornillo del potenciometro (un extremo indica el maximo y el otro el minimo)
+    // Y lo convertimos a grados centigrados y Farenheit, usando la formula indicada en el Data Sheet
+    ui32TempValueC = (1475 - ((2475 * ui32TempAvg)) / 4096) / 10;
+    ui32TempValueF = ((ui32TempValueC * 9) + 160) / 5;
+    // el led cambia de brillo
+    float intensidad;
+    intensidad = (float)ui32ADC0Value[1] / 4095.0f;
+    RGBIntensitySet(intensidad);
+    RGBEnable(); // Habilita la generacion PWM para el encendido de los LEDs
+    BaseType_t higherPriorityTaskWoken = pdFALSE;
+    // Limpia el flag de interrupcion del ADC1 y el secuenciador 3 -> siempre despues
+    // de leer los datos, porque ADCSequenceDataGet puede no hacerse de forma atomica
+    ADCIntClear(ADC0_BASE, 1);
+    envio_mail[0] = ui32TempValueC;
+    // hago la traslacion a temperatura del valor del potenciometro (0 a 4095 escalado a 300-450)
+    envio_mail[1] = 300 + (ui32ADC0Value[1] * 150) / 4095;
+    // en envio_mail[0] envio la temperatura en grados
+    // en envio_mail[1] envio ya el valor que estará en el intervalo 300-450
+    xQueueOverwriteFromISR(mailbox_freertos, envio_mail, &higherPriorityTaskWoken);
+    // 3. Forzamos el cambio de contexto si es necesario
+    // si la tarea temperatura tiene mayor prioridad salta directamente a ella gracias a este llamada,
+    // no deja que lo compruebe automaticamente el programa ya que el programa lo hace cada cierto intervalo de tiempo yy hasta que se produzca ese cambio igual le daria
+    // tiempo a ejecutarse algo la tarea anterior
+    portYIELD_FROM_ISR(higherPriorityTaskWoken);
+}
+void Init_Timer_ADC_RGB(void)
+{
+    uint32_t ui32Period;
+
+    // =========================
+    // TIMER2 (utilizado para disparar el ADC)
+    // =========================
+
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER2);      // Habilita el TIMER2 (utilizado para el ADC)
+    SysCtlPeripheralSleepEnable(SYSCTL_PERIPH_TIMER2); // Esto es necesario para que el timer siga funcionando en bajo consumo
+
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_TIMER2))
+        ; // Espera a que el periférico esté listo
+
+    TimerConfigure(TIMER2_BASE, TIMER_CFG_PERIODIC); // Configura el TIMER2 en modo periódico
+
+    ui32Period = SysCtlClockGet() * 1; // 1 segundo (si pusieses *5 serían 5 segundos cada vez que salta el ADC)
+
+    TimerLoadSet(TIMER2_BASE, TIMER_A, ui32Period - 1); // Se carga la cuenta del timer
+
+    // IMPORTANTE:
+    // El timer NO se habilita aquí (TimerEnable) porque se arranca desde Qt con START_BIT
+    // Esto permite control externo del inicio del sistema
+
+    TimerControlTrigger(TIMER2_BASE, TIMER_A, true); // Habilita el timer como disparo del ADC
+
+    // =========================
+    // ADC0 CONFIGURACIÓN
+    // =========================
+
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_ADC0);      // Habilita ADC0
+    SysCtlPeripheralSleepEnable(SYSCTL_PERIPH_ADC0); // Permite que el ADC funcione en bajo consumo
+
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_ADC0))
+        ; // Espera a que ADC esté listo
+
+    ADCSequenceDisable(ADC0_BASE, 1); // Importante: deshabilitar secuenciador 1 antes de configurar
+
+    // Configuración del secuenciador:
+    ADCSequenceConfigure(ADC0_BASE, 1, ADC_TRIGGER_TIMER, 0); // ADC disparado por TIMER
+
+    // =========================
+    // Configuración de los pasos del secuenciador
+    // =========================
+
+    ADCSequenceStepConfigure(ADC0_BASE, 1, 0, ADC_CTL_TS);
+    // Paso 0: sensor de temperatura interno (ADC_CTL_TS)
+
+    ADCSequenceStepConfigure(ADC0_BASE, 1, 1,
+                             ADC_CTL_CH0 | ADC_CTL_IE | ADC_CTL_END);
+    // Paso 1: canal 0 (potenciómetro en PE3)
+    // ADC_CTL_IE -> genera interrupción
+    // ADC_CTL_END -> último paso de la secuencia
+
+    // =========================
+    // PIN DEL POTENCIÓMETRO
+    // =========================
+
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE); // Habilita GPIOE
+
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOE))
+        ; // Espera a que esté listo
+
+    GPIOPinTypeADC(GPIO_PORTE_BASE, GPIO_PIN_3); // PE3 configurado como entrada ADC
+
+    // =========================
+    // CONFIGURACIÓN ADC AVANZADA
+    // =========================
+
+    ADCHardwareOversampleConfigure(ADC0_BASE, 64); // Sobremuestreo para mejorar estabilidad
+
+    ADCSequenceEnable(ADC0_BASE, 1); // Habilita secuenciador 1
+
+    ADCIntClear(ADC0_BASE, 1); // Limpia flags de interrupción
+
+    // =========================
+    // INTERRUPCIONES ADC
+    // =========================
+
+    IntPrioritySet(INT_ADC0SS1, configMAX_SYSCALL_INTERRUPT_PRIORITY); // Prioridad compatible con FreeRTOS
+
+    IntEnable(INT_ADC0SS1); // Habilita interrupción del ADC secuenciador 1
+
+    ADCIntEnable(ADC0_BASE, 1); // Activa interrupciones del ADC
+
+    // =========================
+    // CONFIGURACIÓN LED RGB
+    // =========================
+
+    uint32_t ui32Color[3];
+
+    ui32Color[RED] = 0x7FFF;   // Rojo: valor medio
+    ui32Color[BLUE] = 0x7FFF;  // Azul: valor medio
+    ui32Color[GREEN] = 0x0000; // Verde apagado
+
+    SysCtlPeripheralSleepEnable(SYSCTL_PERIPH_TIMER0); // RGB usa TIMER0
+    SysCtlPeripheralSleepEnable(SYSCTL_PERIPH_TIMER1); // RGB usa TIMER1
+
+    RGBInit(0);             // Inicializa el sistema de control de LEDs
+    RGBColorSet(ui32Color); // Aplica el color inicial
+}
 //*****************************************************************************
 //
 // Funcion main(), Inicializa los perifericos, crea las tareas, etc... y arranca el bucle del sistema
 //
 //*****************************************************************************
+
 int main(void)
 {
 
@@ -439,8 +714,7 @@ int main(void)
     if (semProducto == NULL)
         while (1)
             ;*/
-    RGBInit(1);
-    RGBEnable();
+
     eventGroup = xEventGroupCreate();
     if (eventGroup == NULL)
         while (1)
@@ -477,10 +751,26 @@ int main(void)
          while (1)
              ;
      }*/
-    mailboxTemp = xQueueCreate(1, sizeof(PARAM_TEMPERATURA));
-    if (mailboxTemp == NULL)
+    // Crear mailbox
+    mailbox_freertos = xQueueCreate(1, sizeof(PARAM_TEMPERATURA));
+    if (mailbox_freertos == NULL)
         while (1)
             ;
+    /*
+          // Crear tarea
+          xTaskCreate(TemperaturasTask,
+                      "temp",
+                      512,
+                      NULL,
+                      tskIDLE_PRIORITY + 1,
+                      NULL);
+
+          // Inicializar RGB
+          RGBInit(1);
+          RGBEnable();
+
+
+          ADC_Timer_Init();*/
 
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
     while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF))
@@ -516,6 +806,9 @@ int main(void)
     //
     // Pone en marcha el planificador. La llamada NO tiene retorno
     //
+
+    Init_Timer_ADC_RGB();
+
     vTaskStartScheduler(); // el RTOS habilita las interrupciones al entrar aqui, asi que no hace falta habilitarlas
 
     // De la funcion vTaskStartScheduler no se sale nunca... a partir de aqui pasan a ejecutarse las tareas.
